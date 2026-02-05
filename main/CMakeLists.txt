@@ -11,4 +11,5 @@ idf_component_register(
         fatfs
         driver
         esp_timer
+        esp_tinyusb
 )
