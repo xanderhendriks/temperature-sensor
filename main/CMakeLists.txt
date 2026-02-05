@@ -1,0 +1,14 @@
+idf_component_register(
+    SRCS 
+        "main.c" 
+        "temperature.c" 
+        "logger.c" 
+        "usb_handler.c"
+    INCLUDE_DIRS 
+        "."
+    REQUIRES 
+        esp_littlefs
+        fatfs
+        driver
+        esp_timer
+)
