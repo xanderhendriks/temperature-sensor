@@ -141,6 +141,16 @@ esp_err_t logger_get_data(char *buffer, size_t buffer_size, size_t *data_len) {
         return ESP_FAIL;
     }
     
+    // Check file size
+    fseek(f, 0, SEEK_END);
+    long file_size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    
+    if (file_size >= (long)buffer_size) {
+        ESP_LOGW(TAG, "Log file size (%ld bytes) exceeds buffer size (%d bytes), truncating", 
+                 file_size, buffer_size - 1);
+    }
+    
     size_t bytes_read = fread(buffer, 1, buffer_size - 1, f);
     buffer[bytes_read] = '\0';
     fclose(f);

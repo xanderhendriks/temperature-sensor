@@ -15,10 +15,12 @@ static const char *TAG = "usb_handler";
 static uint8_t rx_buf[USB_RX_BUF_SIZE];
 static char tx_buf[USB_TX_BUF_SIZE];
 
-// USB CDC ACM callback
+// USB CDC ACM callback - not used, as we poll for data in the task instead
+// This is registered to satisfy the API requirement
 static void tinyusb_cdc_rx_callback(int itf, cdcacm_event_t *event) {
-    // CDC RX callback is called from ISR context, so we just signal the task
-    // Actual processing happens in usb_task
+    // Intentionally empty - data is polled in usb_task
+    (void)itf;
+    (void)event;
 }
 
 esp_err_t usb_init(void) {

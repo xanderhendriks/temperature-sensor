@@ -80,7 +80,8 @@ void app_main(void) {
     ESP_ERROR_CHECK(ret);
     
     // Initialize temperature sensor (using simulated readings)
-    ret = temperature_init(TEMP_SENSOR_SIMULATED, 4);  // GPIO 4 (not used for simulated)
+    // Note: GPIO pin parameter is not used for simulated sensor, but required by API
+    ret = temperature_init(TEMP_SENSOR_SIMULATED, 4);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to initialize temperature sensor");
         return;
