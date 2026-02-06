@@ -103,37 +103,34 @@ void app_main(void) {
     
     ESP_LOGI(TAG, "All subsystems initialized successfully");
     
-    // Create LED blink task (Core 0)
-    xTaskCreatePinnedToCore(
+    // Create LED blink task
+    xTaskCreate(
         led_task,
         "led_task",
         2048,
         NULL,
         5,
-        &led_task_handle,
-        0  // Core 0
+        &led_task_handle
     );
     
-    // Create logging task (Core 0)
-    xTaskCreatePinnedToCore(
+    // Create logging task
+    xTaskCreate(
         logging_task,
         "logging_task",
         4096,
         NULL,
         5,
-        &logging_task_handle,
-        0  // Core 0
+        &logging_task_handle
     );
     
-    // Create USB task (Core 1)
-    xTaskCreatePinnedToCore(
+    // Create USB task
+    xTaskCreate(
         usb_task,
         "usb_task",
         4096,
         NULL,
         5,
-        &usb_task_handle,
-        1  // Core 1
+        &usb_task_handle
     );
     
     ESP_LOGI(TAG, "All tasks created successfully");

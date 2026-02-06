@@ -19,12 +19,7 @@ This project is configured to build with ESP-IDF v5.0 or later.
    cd temperature-sensor
    ```
 
-2. Install dependencies (esp_littlefs component):
-   ```bash
-   idf.py reconfigure
-   ```
-
-3. Build the project:
+2. Build the project:
    ```bash
    idf.py build
    ```
@@ -49,7 +44,7 @@ This project is configured to build with ESP-IDF v5.0 or later.
 - **Dual-core operation**: Logging on Core 0, USB handling on Core 1
 - **Temperature logging**: Logs temperature every 60 seconds to LittleFS partition
 - **LED indicator**: Blinks on GPIO 8 to show system is running
-- **USB CDC serial interface**: Commands available:
+- **USB Serial/JTAG interface**: Commands available:
   - `GET_DATA` - Retrieve all logged data in CSV format
   - `GET_CURRENT` - Get current temperature reading
   - `INFO` - Display system information

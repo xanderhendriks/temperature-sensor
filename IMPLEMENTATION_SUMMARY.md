@@ -15,7 +15,7 @@ This implementation provides a complete, ready-to-build ESP-IDF project for the 
    - WEBDATA (512KB) FAT partition (reserved for future web dashboard)
    - LOGDATA (3.5MB) LittleFS partition for temperature logs
 3. **sdkconfig.defaults** - Default configuration enabling:
-   - TinyUSB with CDC and MSC support
+   - USB Serial/JTAG driver support
    - LittleFS filesystem
    - Dual-core FreeRTOS operation
    - Custom partition table
@@ -24,7 +24,7 @@ This implementation provides a complete, ready-to-build ESP-IDF project for the 
 
 #### Main Component (main/):
 1. **CMakeLists.txt** - Component registration with all dependencies
-2. **idf_component.yml** - Component manifest for esp_littlefs
+2. **idf_component.yml** - Component manifest for joltwallet/esp_littlefs
 3. **main.c** - Application entry point with:
    - LED blink task (GPIO 8, Core 0)
    - Temperature logging task (60s interval, Core 0)
@@ -38,7 +38,7 @@ This implementation provides a complete, ready-to-build ESP-IDF project for the 
    - CSV format output
    - Automatic rotation at 100,000 entries
    - Backup of previous log file
-6. **usb_handler.h/c** - USB CDC serial protocol:
+6. **usb_handler.h/c** - USB Serial/JTAG command protocol:
    - GET_DATA: Retrieve all logged data
    - GET_CURRENT: Get current temperature
    - INFO: System information
@@ -58,7 +58,7 @@ This implementation provides a complete, ready-to-build ESP-IDF project for the 
 - Automatic log rotation
 
 ✅ **USB Interface**
-- CDC serial protocol for data access
+- USB Serial/JTAG protocol for data access
 - Command-based communication
 - Ready for web dashboard integration
 
@@ -101,10 +101,10 @@ To test this implementation:
 2. Run `idf.py build` to compile
 3. Flash to ESP32-C6 device
 4. Monitor serial output to verify operation
-5. Connect via USB CDC to test commands
+5. Connect via USB Serial/JTAG to test commands
 
 ### Dependencies
 
 - ESP-IDF v5.0+
-- esp_littlefs component (managed)
-- Standard ESP-IDF components (nvs_flash, driver, esp_timer, esp_tinyusb, fatfs)
+- joltwallet/esp_littlefs component (managed)
+- Standard ESP-IDF components (nvs_flash, driver, esp_timer, esp_driver_usb_serial_jtag)

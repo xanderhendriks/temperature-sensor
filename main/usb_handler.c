@@ -4,8 +4,7 @@
 #include <string.h>
 #include <stdio.h>
 #include "esp_log.h"
-#include "tinyusb.h"
-#include "tusb_cdc_acm.h"
+#include "driver/usb_serial_jtag.h"
 
 static const char *TAG = "usb_handler";
 
@@ -15,38 +14,23 @@ static const char *TAG = "usb_handler";
 static uint8_t rx_buf[USB_RX_BUF_SIZE];
 static char tx_buf[USB_TX_BUF_SIZE];
 
-// USB CDC ACM callback - not used, as we poll for data in the task instead
-// This is registered to satisfy the API requirement
-static void tinyusb_cdc_rx_callback(int itf, cdcacm_event_t *event) {
-    // Intentionally empty - data is polled in usb_task
-    (void)itf;
-    (void)event;
+static void usb_serial_write(const char *data, size_t len) {
+    if (!usb_serial_jtag_is_connected()) {
+        return;
+    }
+
+    usb_serial_jtag_write_bytes(data, len, pdMS_TO_TICKS(100));
+    usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(100));
 }
 
 esp_err_t usb_init(void) {
     ESP_LOGI(TAG, "Initializing USB...");
     
-    // Configure TinyUSB
-    tinyusb_config_t tusb_cfg = {
-        .device_descriptor = NULL,  // Use default descriptor
-        .string_descriptor = NULL,  // Use default string descriptor
-        .external_phy = false,
-        .configuration_descriptor = NULL,
-    };
-    
-    ESP_ERROR_CHECK(tinyusb_driver_install(&tusb_cfg));
-    
-    tinyusb_config_cdcacm_t acm_cfg = {
-        .usb_dev = TINYUSB_USBDEV_0,
-        .cdc_port = TINYUSB_CDC_ACM_0,
-        .rx_unread_buf_sz = 512,
-        .callback_rx = &tinyusb_cdc_rx_callback,
-        .callback_rx_wanted_char = NULL,
-        .callback_line_state_changed = NULL,
-        .callback_line_coding_changed = NULL
-    };
-    
-    ESP_ERROR_CHECK(tusb_cdc_acm_init(&acm_cfg));
+    usb_serial_jtag_driver_config_t cfg = USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();
+    cfg.rx_buffer_size = USB_RX_BUF_SIZE;
+    cfg.tx_buffer_size = USB_TX_BUF_SIZE;
+
+    ESP_ERROR_CHECK(usb_serial_jtag_driver_install(&cfg));
     
     ESP_LOGI(TAG, "USB initialized successfully");
     
@@ -73,13 +57,11 @@ static void handle_command(const char *cmd, size_t cmd_len) {
         esp_err_t ret = logger_get_data(tx_buf, sizeof(tx_buf) - 1, &data_len);
         
         if (ret == ESP_OK) {
-            tinyusb_cdcacm_write_queue(TINYUSB_CDC_ACM_0, (uint8_t*)tx_buf, data_len);
-            tinyusb_cdcacm_write_flush(TINYUSB_CDC_ACM_0, 0);
+            usb_serial_write(tx_buf, data_len);
             ESP_LOGI(TAG, "Sent %d bytes of log data", data_len);
         } else {
             const char *err_msg = "ERROR: Failed to retrieve log data\n";
-            tinyusb_cdcacm_write_queue(TINYUSB_CDC_ACM_0, (uint8_t*)err_msg, strlen(err_msg));
-            tinyusb_cdcacm_write_flush(TINYUSB_CDC_ACM_0, 0);
+            usb_serial_write(err_msg, strlen(err_msg));
         }
     }
     // GET_CURRENT command - return current temperature
@@ -89,8 +71,7 @@ static void handle_command(const char *cmd, size_t cmd_len) {
         float temp = temperature_read();
         int len = snprintf(tx_buf, sizeof(tx_buf), "%.2f\n", temp);
         
-        tinyusb_cdcacm_write_queue(TINYUSB_CDC_ACM_0, (uint8_t*)tx_buf, len);
-        tinyusb_cdcacm_write_flush(TINYUSB_CDC_ACM_0, 0);
+        usb_serial_write(tx_buf, len);
         ESP_LOGI(TAG, "Sent current temperature: %.2f°C", temp);
     }
     // INFO command - return system information
@@ -107,8 +88,7 @@ static void handle_command(const char *cmd, size_t cmd_len) {
                           "Max entries: %d\n",
                           sensor_name, entry_count, MAX_LOG_ENTRIES);
         
-        tinyusb_cdcacm_write_queue(TINYUSB_CDC_ACM_0, (uint8_t*)tx_buf, len);
-        tinyusb_cdcacm_write_flush(TINYUSB_CDC_ACM_0, 0);
+        usb_serial_write(tx_buf, len);
         ESP_LOGI(TAG, "Sent system info");
     }
     // CLEAR_DATA command - clear all logged data
@@ -119,20 +99,17 @@ static void handle_command(const char *cmd, size_t cmd_len) {
         
         if (ret == ESP_OK) {
             const char *msg = "OK: Log data cleared\n";
-            tinyusb_cdcacm_write_queue(TINYUSB_CDC_ACM_0, (uint8_t*)msg, strlen(msg));
-            tinyusb_cdcacm_write_flush(TINYUSB_CDC_ACM_0, 0);
+            usb_serial_write(msg, strlen(msg));
             ESP_LOGI(TAG, "Log data cleared successfully");
         } else {
             const char *err_msg = "ERROR: Failed to clear log data\n";
-            tinyusb_cdcacm_write_queue(TINYUSB_CDC_ACM_0, (uint8_t*)err_msg, strlen(err_msg));
-            tinyusb_cdcacm_write_flush(TINYUSB_CDC_ACM_0, 0);
+            usb_serial_write(err_msg, strlen(err_msg));
         }
     }
     // Unknown command
     else {
         const char *err_msg = "ERROR: Unknown command. Available: GET_DATA, GET_CURRENT, INFO, CLEAR_DATA\n";
-        tinyusb_cdcacm_write_queue(TINYUSB_CDC_ACM_0, (uint8_t*)err_msg, strlen(err_msg));
-        tinyusb_cdcacm_write_flush(TINYUSB_CDC_ACM_0, 0);
+        usb_serial_write(err_msg, strlen(err_msg));
         ESP_LOGW(TAG, "Unknown command received");
     }
 }
@@ -141,14 +118,11 @@ void usb_task(void *pvParameters) {
     ESP_LOGI(TAG, "USB task started on core %d", xPortGetCoreID());
     
     while (1) {
-        // Check if USB CDC is connected
-        if (tud_cdc_connected()) {
-            // Check for received data
-            size_t rx_size = 0;
-            esp_err_t ret = tinyusb_cdcacm_read(TINYUSB_CDC_ACM_0, rx_buf, sizeof(rx_buf) - 1, &rx_size);
-            
-            if (ret == ESP_OK && rx_size > 0) {
-                rx_buf[rx_size] = '\0';  // Null-terminate
+        // Check if USB Serial/JTAG is connected
+        if (usb_serial_jtag_is_connected()) {
+            int rx_size = usb_serial_jtag_read_bytes(rx_buf, sizeof(rx_buf) - 1, pdMS_TO_TICKS(20));
+            if (rx_size > 0) {
+                rx_buf[rx_size] = '\0';
                 handle_command((char*)rx_buf, rx_size);
             }
         }

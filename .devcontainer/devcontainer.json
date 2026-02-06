@@ -1,0 +1,37 @@
+{
+    "name": "Temperature sensor container",
+    "build": {
+        "dockerfile": "${localWorkspaceFolder}/Dockerfile"
+    },
+    "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
+    "workspaceFolder": "/workspace",
+    "containerUser": "ubuntu",
+    "mounts": [
+        // USB
+        "source=/dev/bus/usb,target=/dev/bus/usb,type=bind,consistency=cached",
+        // Wayland Display
+        "source=${env:XDG_RUNTIME_DIR}/${env:WAYLAND_DISPLAY},target=/tmp/${env:WAYLAND_DISPLAY},type=bind,consistency=cached""source=/dev/dri,target=/dev/dri,type=bind,consistency=cached",
+    ],
+    "runArgs": [
+        "--privileged",
+    ],
+    "customizations": {
+        "vscode": {
+            "settings": {
+                "terminal.integrated.defaultProfile.linux": "bash",
+                "[c]": {
+                    "editor.defaultFormatter": "ms-vscode.cpptools"
+                },
+                "[cpp]": {
+                    "editor.defaultFormatter": "ms-vscode.cpptools"
+                },
+                "editor.formatOnSave": true,
+                "cmake.configureOnOpen": false
+            },
+            "extensions": [
+                "espressif.esp-idf-extension",
+                "ms-vscode.cpptools-extension-pack"
+            ]
+        }
+    }
+}

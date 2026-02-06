@@ -1,3 +1,4 @@
 dependencies:
-  esp_littlefs:
-    version: "^1.0.0"
+  joltwallet/littlefs: ^1.20.4
+idf:
+  version: '>=5.4.0'

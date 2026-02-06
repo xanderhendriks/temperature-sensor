@@ -4,6 +4,7 @@
 #include <time.h>
 #include <sys/stat.h>
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "esp_littlefs.h"
 
 static const char *TAG = "logger";
@@ -21,7 +22,7 @@ esp_err_t logger_init(const char *partition_label) {
         .format_if_mount_failed = true,
         .dont_mount = false,
     };
-    
+
     esp_err_t ret = esp_vfs_littlefs_register(&conf);
     if (ret != ESP_OK) {
         if (ret == ESP_FAIL) {
@@ -33,7 +34,7 @@ esp_err_t logger_init(const char *partition_label) {
         }
         return ret;
     }
-    
+
     size_t total = 0, used = 0;
     ret = esp_littlefs_info(partition_label, &total, &used);
     if (ret != ESP_OK) {
