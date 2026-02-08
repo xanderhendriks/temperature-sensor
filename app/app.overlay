@@ -7,8 +7,30 @@
     };
 };
 
+/* Add a nodelabel so we can reference the HTS221 in C */
+&i2c2 {
+    hts221: hts221@5f {
+        compatible = "st,hts221";
+        reg = <0x5f>;
+    };
+};
+
 &zephyr_udc0 {
     cdc_acm_uart0 {
         compatible = "zephyr,cdc-acm-uart";
+    };
+};
+
+/* Enlarge storage partition for NVS log persistence (64 KB) */
+&flash0 {
+    partitions {
+        compatible = "fixed-partitions";
+        #address-cells = <1>;
+        #size-cells = <1>;
+
+        nvs_partition: partition@1f0000 {
+            label = "nvs_storage";
+            reg = <0x1f0000 0x10000>;
+        };
     };
 };
