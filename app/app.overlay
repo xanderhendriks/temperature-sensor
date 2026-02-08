@@ -21,16 +21,18 @@
     };
 };
 
-/* Enlarge storage partition for NVS log persistence (64 KB) */
-&flash0 {
+/* Carve NVS partition from external Quad-SPI flash (MX25R6435F, 8 MB) */
+&mx25r6435f {
     partitions {
-        compatible = "fixed-partitions";
-        #address-cells = <1>;
-        #size-cells = <1>;
+        /delete-node/ partition@000;
 
-        nvs_partition: partition@1f0000 {
+        store_partition: partition@0 {
+            label = "store";
+            reg = <0x0 0x7C0000>;   /* 7936 KB */
+        };
+        nvs_partition: partition@7C0000 {
             label = "nvs_storage";
-            reg = <0x1f0000 0x10000>;
+            reg = <0x7C0000 0x40000>; /* 256 KB for NVS */
         };
     };
 };
