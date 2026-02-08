@@ -1,0 +1,64 @@
+diff --git a/drivers/usb/device/usb_dc_stm32.c b/drivers/usb/device/usb_dc_stm32.c
+index 13131061610..117547fa0ac 100644
+--- a/drivers/usb/device/usb_dc_stm32.c
++++ b/drivers/usb/device/usb_dc_stm32.c
+@@ -130,14 +130,14 @@ static const struct gpio_dt_spec ulpi_reset =
+ /* We need n TX IN FIFOs */
+ #define TX_FIFO_NUM USB_NUM_BIDIR_ENDPOINTS
+ 
+-/* We need a minimum size for RX FIFO */
+-#define USB_FIFO_RX_MIN 160
++/* RX FIFO size in 32-bit words (must fit largest packet + setup + status) */
++#define USB_FIFO_RX_WORDS 64
+ 
+-/* 4-byte words TX FIFO */
+-#define TX_FIFO_WORDS ((USB_RAM_SIZE - USB_FIFO_RX_MIN - 64) / 4)
++/* 32-bit words available for all TX FIFOs (EP0 gets 16 words separately) */
++#define TX_FIFO_WORDS ((USB_RAM_SIZE / 4) - USB_FIFO_RX_WORDS - 16)
+ 
+ /* Allocate FIFO memory evenly between the TX FIFOs */
+-/* except the first TX endpoint need only 64 bytes */
++/* except the first TX endpoint need only 16 words (64 bytes) */
+ #define TX_FIFO_EP_WORDS (TX_FIFO_WORDS / (TX_FIFO_NUM - 1))
+ 
+ #endif /* USB */
+@@ -446,7 +446,7 @@ static int usb_dc_stm32_init(void)
+ #else /* USB_OTG_FS */
+ 
+ 	/* TODO: make this dynamic (depending usage) */
+-	HAL_PCDEx_SetRxFiFo(&usb_dc_stm32_state.pcd, USB_FIFO_RX_MIN);
++	HAL_PCDEx_SetRxFiFo(&usb_dc_stm32_state.pcd, USB_FIFO_RX_WORDS);
+ 	for (i = 0U; i < USB_NUM_BIDIR_ENDPOINTS; i++) {
+ 		if (i == 0) {
+ 			/* first endpoint need only 64 byte for EP_TYPE_CTRL */
+diff --git a/subsys/usb/device/class/msc.c b/subsys/usb/device/class/msc.c
+index 1971c942af8..3e5978ecb6b 100644
+--- a/subsys/usb/device/class/msc.c
++++ b/subsys/usb/device/class/msc.c
+@@ -423,6 +423,13 @@ static bool modeSense6(void)
+ 	return write(sense6, sizeof(sense6));
+ }
+ 
++static bool modeSense10(void)
++{
++	uint8_t sense10[] = { 0x00, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
++
++	return write(sense10, sizeof(sense10));
++}
++
+ static bool readFormatCapacity(void)
+ {
+ 	uint8_t capacity[] = { 0x00, 0x00, 0x00, 0x08,
+@@ -602,6 +609,12 @@ static void CBWDecode(uint8_t *buf, uint16_t size)
+ 				modeSense6();
+ 			}
+ 			break;
++		case MODE_SENSE10:
++			LOG_DBG(">> MODE_SENSE10");
++			if (check_cbw_data_length()) {
++				modeSense10();
++			}
++			break;
+ 		case READ_FORMAT_CAPACITIES:
+ 			LOG_DBG(">> READ_FORMAT_CAPACITY");
+ 			if (check_cbw_data_length()) {
