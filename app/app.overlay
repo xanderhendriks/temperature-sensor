@@ -15,13 +15,21 @@
     };
 };
 
+/* SHT31 on Arduino D14/D15 (PB9/PB8) = i2c1 */
+&i2c1 {
+    sht31: sht3xd@44 {
+        compatible = "sensirion,sht3xd";
+        reg = <0x44>;
+    };
+};
+
 &zephyr_udc0 {
     cdc_acm_uart0 {
         compatible = "zephyr,cdc-acm-uart";
     };
 };
 
-/* Carve NVS partition from external Quad-SPI flash (MX25R6435F, 8 MB) */
+/* Carve LittleFS partition from external Quad-SPI flash (MX25R6435F, 8 MB) */
 &mx25r6435f {
     partitions {
         /delete-node/ partition@000;
@@ -30,9 +38,9 @@
             label = "store";
             reg = <0x0 0x7C0000>;   /* 7936 KB */
         };
-        nvs_partition: partition@7C0000 {
-            label = "nvs_storage";
-            reg = <0x7C0000 0x40000>; /* 256 KB for NVS */
+        lfs_partition: partition@7C0000 {
+            label = "lfs_storage";
+            reg = <0x7C0000 0x40000>; /* 256 KB for LittleFS */
         };
     };
 };

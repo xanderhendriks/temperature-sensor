@@ -9,7 +9,7 @@
 #include <zephyr/usb/usb_device.h>
 #include <zephyr/drivers/rtc.h>
 #include <zephyr/drivers/sensor.h>
-#include <zephyr/fs/nvs.h>
+#include <zephyr/fs/littlefs.h>
 #include <zephyr/drivers/flash.h>
 #include <zephyr/storage/flash_map.h>
 #include <time.h>
@@ -30,19 +30,26 @@ static const struct device *cdc_dev;
 #endif
 static const struct device *rtc_dev;
 static const struct device *hts221_dev;
+static const struct device *sht31_dev;
 static struct fs_mount_t fs_mnt;
 static FATFS fat_fs;
 static bool fs_mounted;
 K_MUTEX_DEFINE(ram_log_lock);
 
-/* NVS storage for persistent logging */
-static struct nvs_fs nvs;
-static bool nvs_ready;
+/* LittleFS storage for persistent logging */
+#define LFS_MOUNT_POINT "/lfs"
+#define LOG_FILE_PATH   LFS_MOUNT_POINT "/log.bin"
+static bool lfs_ready;
 
-#define NVS_META_ID    0
-#define NVS_ENTRY_BASE 1   /* IDs 1 .. RAM_LOG_CAPACITY */
+FS_LITTLEFS_DECLARE_DEFAULT_CONFIG(lfs_cfg);
+static struct fs_mount_t lfs_mnt = {
+    .type = FS_LITTLEFS,
+    .fs_data = &lfs_cfg,
+    .storage_dev = (void *)FIXED_PARTITION_ID(lfs_partition),
+    .mnt_point = LFS_MOUNT_POINT,
+};
 
-struct __packed log_meta {
+struct __packed log_header {
     uint32_t head;
     uint32_t count;
 };
@@ -50,6 +57,9 @@ struct __packed log_meta {
 struct __packed ram_log_entry {
     int64_t ts;       /* Unix epoch seconds, or uptime if RTC not set */
     float temp_c;
+    float hum_pct;    /* Relative humidity % */
+    float temp2_c;    /* SHT31 temperature */
+    float hum2_pct;   /* SHT31 humidity */
 };
 
 static bool rtc_time_set;
@@ -79,27 +89,63 @@ static const char index_html[] =
 "<head>\n"
 "  <meta charset=\"utf-8\">\n"
 "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
-"  <title>Temperature Logger</title>\n"
+"  <title>Temperature &amp; Humidity Logger</title>\n"
 "  <style>\n"
 "    body { font-family: ui-sans-serif, system-ui, sans-serif; margin: 24px; }\n"
 "    button { margin-right: 8px; padding: 8px 12px; }\n"
 "    button:disabled { opacity: 0.5; }\n"
 "    #status { font-weight: bold; margin: 8px 0; }\n"
 "    .ok { color: #16a34a; } .err { color: #dc2626; }\n"
-"    canvas { border: 1px solid #ddd; width: 100%%; max-width: 720px; height: 320px; }\n"
-"    pre { background: #f7f7f7; padding: 12px; max-height: 240px; overflow: auto; }\n"
+"    canvas { border: 1px solid #ddd; width: 100%; max-width: 760px; height: 380px; }\n"
+"    pre { background: #f7f7f7; padding: 12px; max-height: 200px; overflow: auto; }\n"
+"    .checks { margin: 10px 0; }\n"
+"    .checks label { margin-right: 16px; cursor: pointer; }\n"
+"    .checks input[type=checkbox] { margin-right: 4px; }\n"
+"    .swatch { display: inline-block; width: 14px; height: 3px;\n"
+"              vertical-align: middle; margin-right: 4px; }\n"
+"    .range-row { margin: 10px 0; display: flex; flex-wrap: wrap;\n"
+"                 align-items: center; gap: 8px; }\n"
+"    .range-row label { font-size: 13px; }\n"
+"    .range-row input[type=datetime-local] { padding: 4px 6px; font-size: 13px; }\n"
+"    .range-row button { padding: 4px 10px; font-size: 13px; }\n"
+"    .quick-btns button { padding: 4px 10px; font-size: 12px; margin: 2px; }\n"
 "  </style>\n"
 "</head>\n"
 "<body>\n"
-"  <h1>Temperature Logger</h1>\n"
+"  <h1>Temperature &amp; Humidity Logger</h1>\n"
 "  <p id=\"status\"></p>\n"
 "  <button id=\"connect\">Connect</button>\n"
 "  <button id=\"settime\" disabled>Set Time</button>\n"
 "  <button id=\"get\" disabled>Get Data</button>\n"
 "  <button id=\"current\" disabled>Get Current</button>\n"
 "  <button id=\"clear\" disabled>Clear Data</button>\n"
+"  <div class=\"checks\">\n"
+"    <label><input type=\"checkbox\" id=\"cb_ht\">"
+"<span class=\"swatch\" style=\"background:#1d4ed8\"></span>HTS221 Temp</label>\n"
+"    <label><input type=\"checkbox\" id=\"cb_hh\">"
+"<span class=\"swatch\" style=\"background:#93c5fd\"></span>HTS221 Hum</label>\n"
+"    <label><input type=\"checkbox\" id=\"cb_st\" checked>"
+"<span class=\"swatch\" style=\"background:#dc2626\"></span>SHT31 Temp</label>\n"
+"    <label><input type=\"checkbox\" id=\"cb_sh\" checked>"
+"<span class=\"swatch\" style=\"background:#fca5a5\"></span>SHT31 Hum</label>\n"
+"  </div>\n"
+"  <div class=\"range-row\">\n"
+"    <label>From</label>\n"
+"    <input type=\"datetime-local\" id=\"dt_from\" step=\"60\">\n"
+"    <label>To</label>\n"
+"    <input type=\"datetime-local\" id=\"dt_to\" step=\"60\">\n"
+"    <button id=\"applyRange\">Apply</button>\n"
+"    <button id=\"resetRange\">Show All</button>\n"
+"  </div>\n"
+"  <div class=\"quick-btns\">\n"
+"    <button data-hrs=\"1\">Last 1h</button>\n"
+"    <button data-hrs=\"6\">Last 6h</button>\n"
+"    <button data-hrs=\"24\">Last 24h</button>\n"
+"    <button data-hrs=\"72\">Last 3d</button>\n"
+"    <button data-hrs=\"168\">Last 7d</button>\n"
+"  </div>\n"
+"  <canvas id=\"chart\" width=\"760\" height=\"380\"></canvas>\n"
 "  <pre id=\"log\"></pre>\n"
-"  <canvas id=\"chart\" width=\"720\" height=\"320\"></canvas>\n"
 "  <script>\n"
 "    const logEl = document.getElementById('log');\n"
 "    const statusEl = document.getElementById('status');\n"
@@ -109,13 +155,47 @@ static const char index_html[] =
 "    const curBtn = document.getElementById('current');\n"
 "    const timeBtn = document.getElementById('settime');\n"
 "    const clrBtn = document.getElementById('clear');\n"
-"    let port, reader, textBuf = '';\n"
+"    const dtFrom = document.getElementById('dt_from');\n"
+"    const dtTo   = document.getElementById('dt_to');\n"
+"    let port, reader, textBuf = '', allPts = [];\n"
+"\n"
+"    const series = [\n"
+"      { id:'cb_ht', key:'t1', color:'#1d4ed8', label:'HTS221 Temp', isTemp:true },\n"
+"      { id:'cb_hh', key:'h1', color:'#93c5fd', label:'HTS221 Hum',  isTemp:false },\n"
+"      { id:'cb_st', key:'t2', color:'#dc2626', label:'SHT31 Temp',  isTemp:true },\n"
+"      { id:'cb_sh', key:'h2', color:'#fca5a5', label:'SHT31 Hum',   isTemp:false }\n"
+"    ];\n"
+"\n"
+"    function redraw() { if (allPts.length) drawChart(); }\n"
+"    series.forEach(s => document.getElementById(s.id).addEventListener('change', redraw));\n"
+"\n"
+"    function toLocal(epoch) {\n"
+"      const d = new Date(epoch * 1000);\n"
+"      const pad = n => String(n).padStart(2, '0');\n"
+"      return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())\n"
+"             +'T'+pad(d.getHours())+':'+pad(d.getMinutes());\n"
+"    }\n"
+"    function fromLocal(s) { return s ? Math.floor(new Date(s).getTime()/1000) : 0; }\n"
+"\n"
+"    document.getElementById('applyRange').addEventListener('click', redraw);\n"
+"    document.getElementById('resetRange').addEventListener('click', () => {\n"
+"      dtFrom.value = ''; dtTo.value = ''; redraw();\n"
+"    });\n"
+"    document.querySelectorAll('.quick-btns button').forEach(b => {\n"
+"      b.addEventListener('click', () => {\n"
+"        const hrs = Number(b.dataset.hrs);\n"
+"        if (!allPts.length) return;\n"
+"        const latest = allPts[allPts.length-1].t;\n"
+"        dtFrom.value = toLocal(latest - hrs * 3600);\n"
+"        dtTo.value   = toLocal(latest);\n"
+"        redraw();\n"
+"      });\n"
+"    });\n"
 "\n"
 "    function status(msg, ok) {\n"
 "      statusEl.textContent = msg;\n"
 "      statusEl.className = ok ? 'ok' : 'err';\n"
 "    }\n"
-"\n"
 "    function append(text) { logEl.textContent += text; logEl.scrollTop = logEl.scrollHeight; }\n"
 "\n"
 "    if (!('serial' in navigator)) {\n"
@@ -132,13 +212,8 @@ static const char index_html[] =
 "        reader = port.readable.getReader();\n"
 "        readLoop();\n"
 "        status('Connected.', true);\n"
-"        getBtn.disabled = false;\n"
-"        curBtn.disabled = false;\n"
-"        timeBtn.disabled = false;\n"
-"        clrBtn.disabled = false;\n"
-"      } catch (e) {\n"
-"        status('Connect failed: ' + e.message, false);\n"
-"      }\n"
+"        [getBtn,curBtn,timeBtn,clrBtn].forEach(b => b.disabled = false);\n"
+"      } catch (e) { status('Connect failed: ' + e.message, false); }\n"
 "    }\n"
 "\n"
 "    async function readLoop() {\n"
@@ -149,13 +224,12 @@ static const char index_html[] =
 "          const chunk = new TextDecoder().decode(value);\n"
 "          textBuf += chunk;\n"
 "          append(chunk);\n"
-"          if (textBuf.includes('Timestamp,Temperature_C')) {\n"
-"            drawChart(textBuf);\n"
+"          if (textBuf.includes('HTS221_Temp_C')) {\n"
+"            parseCsv(textBuf);\n"
+"            drawChart();\n"
 "          }\n"
 "        }\n"
-"      } catch (e) {\n"
-"        status('Read error: ' + e.message, false);\n"
-"      }\n"
+"      } catch (e) { status('Read error: ' + e.message, false); }\n"
 "    }\n"
 "\n"
 "    async function send(cmd) {\n"
@@ -164,30 +238,94 @@ static const char index_html[] =
 "        const writer = port.writable.getWriter();\n"
 "        await writer.write(new TextEncoder().encode(cmd + '\\n'));\n"
 "        writer.releaseLock();\n"
-"      } catch (e) {\n"
-"        status('Send failed: ' + e.message, false);\n"
+"      } catch (e) { status('Send failed: ' + e.message, false); }\n"
+"    }\n"
+"\n"
+"    function parseCsv(csv) {\n"
+"      const lines = csv.trim().split(/\\r?\\n/).slice(1);\n"
+"      allPts = lines.map(l => l.split(',')).map(p => ({\n"
+"        t: Number(p[0]), t1: Number(p[1]), h1: Number(p[2]),\n"
+"        t2: Number(p[3]), h2: Number(p[4])\n"
+"      })).filter(p => !isNaN(p.t) && !isNaN(p.t1));\n"
+"      if (allPts.length && !dtFrom.value) {\n"
+"        dtFrom.value = toLocal(allPts[0].t);\n"
+"        dtTo.value   = toLocal(allPts[allPts.length-1].t);\n"
 "      }\n"
 "    }\n"
 "\n"
-"    function drawChart(csv) {\n"
-"      const lines = csv.trim().split(/\\r?\\n/).slice(1);\n"
-"      const points = lines.map(l => l.split(',')).map(p => ({\n"
-"        t: Number(p[0]), v: Number(p[1])\n"
-"      })).filter(p => !isNaN(p.t) && !isNaN(p.v));\n"
-"      if (points.length < 2) return;\n"
-"      const minV = Math.min(...points.map(p => p.v));\n"
-"      const maxV = Math.max(...points.map(p => p.v));\n"
-"      const range = maxV - minV || 1;\n"
+"    function drawChart() {\n"
+"      const fEpoch = fromLocal(dtFrom.value);\n"
+"      const tEpoch = fromLocal(dtTo.value);\n"
+"      let pts = allPts;\n"
+"      if (fEpoch) pts = pts.filter(p => p.t >= fEpoch);\n"
+"      if (tEpoch) pts = pts.filter(p => p.t <= tEpoch);\n"
+"      const active = series.filter(s => document.getElementById(s.id).checked);\n"
 "      ctx.clearRect(0, 0, canvas.width, canvas.height);\n"
-"      ctx.beginPath();\n"
-"      points.forEach((p, i) => {\n"
-"        const x = (i / (points.length - 1)) * canvas.width;\n"
-"        const y = canvas.height - ((p.v - minV) / range) * canvas.height;\n"
-"        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);\n"
+"      if (pts.length < 2 || !active.length) return;\n"
+"\n"
+"      const W = canvas.width, H = canvas.height;\n"
+"      const ml = 55, mr = 55, mt = 28, mb = 50;\n"
+"      const pw = W - ml - mr, ph = H - mt - mb;\n"
+"      ctx.font = '11px sans-serif';\n"
+"\n"
+"      const tempS = active.filter(s => s.isTemp);\n"
+"      const humS  = active.filter(s => !s.isTemp);\n"
+"\n"
+"      function yRange(keys) {\n"
+"        let all = [];\n"
+"        keys.forEach(k => pts.forEach(p => all.push(p[k])));\n"
+"        let mn = Math.min(...all), mx = Math.max(...all);\n"
+"        if (mx - mn < 1) { mn -= 0.5; mx += 0.5; }\n"
+"        return { mn, mx, rng: mx - mn };\n"
+"      }\n"
+"      const tr = tempS.length ? yRange(tempS.map(s=>s.key)) : null;\n"
+"      const hr = humS.length  ? yRange(humS.map(s=>s.key))  : null;\n"
+"\n"
+"      const nTicks = 5;\n"
+"      ctx.strokeStyle = '#e5e7eb'; ctx.lineWidth = 1;\n"
+"      for (let i = 0; i <= nTicks; i++) {\n"
+"        const y = mt + ph - (i/nTicks)*ph;\n"
+"        ctx.beginPath(); ctx.moveTo(ml, y); ctx.lineTo(ml+pw, y); ctx.stroke();\n"
+"        if (tr) {\n"
+"          ctx.fillStyle = '#1d4ed8'; ctx.textAlign = 'right';\n"
+"          ctx.fillText((tr.mn+(i/nTicks)*tr.rng).toFixed(1), ml-4, y+4);\n"
+"        }\n"
+"        if (hr) {\n"
+"          ctx.fillStyle = '#16a34a'; ctx.textAlign = 'left';\n"
+"          ctx.fillText((hr.mn+(i/nTicks)*hr.rng).toFixed(0)+'%', ml+pw+4, y+4);\n"
+"        }\n"
+"      }\n"
+"\n"
+"      const tMin = pts[0].t, tMax = pts[pts.length-1].t;\n"
+"      const tRng = tMax - tMin || 1;\n"
+"      const nX = Math.min(pts.length, 6);\n"
+"      ctx.fillStyle = '#374151'; ctx.textAlign = 'center';\n"
+"      for (let i = 0; i < nX; i++) {\n"
+"        const idx = Math.round(i*(pts.length-1)/(nX-1));\n"
+"        const x = ml + ((pts[idx].t-tMin)/tRng)*pw;\n"
+"        const d = new Date(pts[idx].t*1000);\n"
+"        ctx.fillText(d.toLocaleDateString([],{month:'short',day:'numeric'}), x, H-mb+16);\n"
+"        ctx.fillText(d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}), x, H-mb+30);\n"
+"        ctx.strokeStyle = '#e5e7eb';\n"
+"        ctx.beginPath(); ctx.moveTo(x, mt); ctx.lineTo(x, mt+ph); ctx.stroke();\n"
+"      }\n"
+"\n"
+"      function plotLine(key, range, color) {\n"
+"        ctx.beginPath();\n"
+"        pts.forEach((p, i) => {\n"
+"          const x = ml + ((p.t-tMin)/tRng)*pw;\n"
+"          const y = mt + ph - ((p[key]-range.mn)/range.rng)*ph;\n"
+"          i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);\n"
+"        });\n"
+"        ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.stroke();\n"
+"      }\n"
+"      active.forEach(s => plotLine(s.key, s.isTemp ? tr : hr, s.color));\n"
+"\n"
+"      ctx.font = '12px sans-serif'; ctx.textAlign = 'left';\n"
+"      active.forEach((s, i) => {\n"
+"        ctx.fillStyle = s.color;\n"
+"        ctx.fillText('\\u2014 ' + s.label, ml + i*130, mt-10);\n"
 "      });\n"
-"      ctx.strokeStyle = '#1d4ed8';\n"
-"      ctx.lineWidth = 2;\n"
-"      ctx.stroke();\n"
 "    }\n"
 "\n"
 "    document.getElementById('connect').addEventListener('click', connect);\n"
@@ -287,18 +425,27 @@ static void ensure_index_html(void)
 
 
 
-static void nvs_persist_entry(uint32_t idx)
+static void lfs_persist_entry(void)
 {
-    if (!nvs_ready) {
+    if (!lfs_ready) {
         return;
     }
-    nvs_write(&nvs, NVS_ENTRY_BASE + idx,
-              &ram_log[idx], sizeof(struct ram_log_entry));
-    struct log_meta meta = { .head = ram_log_head, .count = ram_log_count };
-    nvs_write(&nvs, NVS_META_ID, &meta, sizeof(meta));
+    struct fs_file_t f;
+    fs_file_t_init(&f);
+    int rc = fs_open(&f, LOG_FILE_PATH, FS_O_CREATE | FS_O_WRITE);
+    if (rc < 0) {
+        LOG_ERR("lfs persist open: %d", rc);
+        return;
+    }
+    /* Write header */
+    struct log_header hdr = { .head = ram_log_head, .count = ram_log_count };
+    fs_write(&f, &hdr, sizeof(hdr));
+    /* Write all entries */
+    fs_write(&f, ram_log, RAM_LOG_CAPACITY * sizeof(struct ram_log_entry));
+    fs_close(&f);
 }
 
-static void append_log(float temp_c)
+static void append_log(float temp_c, float hum_pct, float temp2_c, float hum2_pct)
 {
     int64_t ts = get_timestamp();
 
@@ -306,48 +453,79 @@ static void append_log(float temp_c)
     uint32_t idx = ram_log_head;
     ram_log[idx].ts = ts;
     ram_log[idx].temp_c = temp_c;
+    ram_log[idx].hum_pct = hum_pct;
+    ram_log[idx].temp2_c = temp2_c;
+    ram_log[idx].hum2_pct = hum2_pct;
     ram_log_head = (ram_log_head + 1) % RAM_LOG_CAPACITY;
     if (ram_log_count < RAM_LOG_CAPACITY) {
         ram_log_count++;
     }
-    nvs_persist_entry(idx);
+    lfs_persist_entry();
     k_mutex_unlock(&ram_log_lock);
 }
 
-static float read_temperature(void)
+static void read_hts221(float *temp_c, float *hum_pct)
 {
     struct sensor_value val;
 
     if (hts221_dev) {
         sensor_sample_fetch(hts221_dev);
         sensor_channel_get(hts221_dev, SENSOR_CHAN_AMBIENT_TEMP, &val);
-        return (float)val.val1 + (float)val.val2 / 1000000.0f;
+        *temp_c = (float)val.val1 + (float)val.val2 / 1000000.0f;
+        sensor_channel_get(hts221_dev, SENSOR_CHAN_HUMIDITY, &val);
+        *hum_pct = (float)val.val1 + (float)val.val2 / 1000000.0f;
+        return;
     }
     /* Fallback: simulated */
     int64_t seconds = k_uptime_get() / 1000;
-    return 22.0f + (float)(seconds % 300) / 50.0f;
+    *temp_c = 22.0f + (float)(seconds % 300) / 50.0f;
+    *hum_pct = 45.0f + (float)(seconds % 600) / 100.0f;
+}
+
+static void read_sht31(float *temp_c, float *hum_pct)
+{
+    struct sensor_value val;
+
+    if (sht31_dev) {
+        sensor_sample_fetch(sht31_dev);
+        sensor_channel_get(sht31_dev, SENSOR_CHAN_AMBIENT_TEMP, &val);
+        *temp_c = (float)val.val1 + (float)val.val2 / 1000000.0f;
+        sensor_channel_get(sht31_dev, SENSOR_CHAN_HUMIDITY, &val);
+        *hum_pct = (float)val.val1 + (float)val.val2 / 1000000.0f;
+        return;
+    }
+    *temp_c = 0.0f;
+    *hum_pct = 0.0f;
 }
 
 static void send_log_data(void)
 {
-    cdc_write("Timestamp,Temperature_C\n", 25);
+    cdc_write("Timestamp,HTS221_Temp_C,HTS221_Hum_pct,SHT31_Temp_C,SHT31_Hum_pct\n", 56);
     k_mutex_lock(&ram_log_lock, K_FOREVER);
     for (uint32_t i = 0; i < ram_log_count; i++) {
         uint32_t idx = (ram_log_head + RAM_LOG_CAPACITY - ram_log_count + i) % RAM_LOG_CAPACITY;
-        char line[64];
-        int len = snprintk(line, sizeof(line), "%lld,%.2f\n",
+        char line[120];
+        int len = snprintk(line, sizeof(line), "%lld,%.2f,%.1f,%.2f,%.1f\n",
                            (long long)ram_log[idx].ts,
-                           (double)ram_log[idx].temp_c);
+                           (double)ram_log[idx].temp_c,
+                           (double)ram_log[idx].hum_pct,
+                           (double)ram_log[idx].temp2_c,
+                           (double)ram_log[idx].hum2_pct);
         cdc_write(line, len);
     }
     k_mutex_unlock(&ram_log_lock);
 }
 
-static void send_current_temperature(void)
+static void send_current_reading(void)
 {
-    char buf[64];
-    float temp = read_temperature();
-    int len = snprintk(buf, sizeof(buf), "%.2f\n", (double)temp);
+    char buf[120];
+    float temp1, hum1, temp2, hum2;
+    read_hts221(&temp1, &hum1);
+    read_sht31(&temp2, &hum2);
+    int len = snprintk(buf, sizeof(buf),
+                       "HTS221: %.2f C  %.1f %%RH | SHT31: %.2f C  %.1f %%RH\n",
+                       (double)temp1, (double)hum1,
+                       (double)temp2, (double)hum2);
     cdc_write(buf, len);
 }
 
@@ -356,18 +534,17 @@ static void handle_command(const char *cmd)
     if (strncmp(cmd, "GET_DATA", 8) == 0) {
         send_log_data();
     } else if (strncmp(cmd, "GET_CURRENT", 11) == 0) {
-        send_current_temperature();
+        send_current_reading();
     } else if (strncmp(cmd, "INFO", 4) == 0) {
         char buf[96];
-        int len = snprintk(buf, sizeof(buf), "Temp Logger\nEntries: %u\n", ram_log_count);
+        int len = snprintk(buf, sizeof(buf), "Temp+Humidity Logger\nEntries: %u\n", ram_log_count);
         cdc_write(buf, len);
     } else if (strncmp(cmd, "CLEAR_DATA", 10) == 0) {
         k_mutex_lock(&ram_log_lock, K_FOREVER);
         ram_log_head = 0;
         ram_log_count = 0;
-        if (nvs_ready) {
-            struct log_meta meta = { .head = 0, .count = 0 };
-            nvs_write(&nvs, NVS_META_ID, &meta, sizeof(meta));
+        if (lfs_ready) {
+            fs_unlink(LOG_FILE_PATH);
         }
         k_mutex_unlock(&ram_log_lock);
         cdc_write("OK\n", 3);
@@ -473,8 +650,10 @@ static void logger_thread(void)
     LOG_INF("RTC time set – logging started");
 
     while (true) {
-        float temp = read_temperature();
-        append_log(temp);
+        float temp1, hum1, temp2, hum2;
+        read_hts221(&temp1, &hum1);
+        read_sht31(&temp2, &hum2);
+        append_log(temp1, hum1, temp2, hum2);
         k_sleep(K_SECONDS(60));
     }
 }
@@ -512,61 +691,57 @@ int main(void)
         hts221_dev = NULL;
     }
 
-    /* --- NVS init & log restore --- */
-    nvs.flash_device = FIXED_PARTITION_DEVICE(nvs_partition);
-    if (device_is_ready(nvs.flash_device)) {
-        struct flash_pages_info fpi;
-        nvs.offset = FIXED_PARTITION_OFFSET(nvs_partition);
-        flash_get_page_info_by_offs(nvs.flash_device, nvs.offset, &fpi);
-        nvs.sector_size  = fpi.size;   /* 4096 */
-        nvs.sector_count = FIXED_PARTITION_SIZE(nvs_partition) / nvs.sector_size;
+    sht31_dev = DEVICE_DT_GET_OR_NULL(DT_NODELABEL(sht31));
+    if (sht31_dev && device_is_ready(sht31_dev)) {
+        LOG_INF("SHT31 temperature/humidity sensor ready");
+    } else {
+        LOG_WRN("SHT31 not available");
+        sht31_dev = NULL;
+    }
 
-        rc = nvs_mount(&nvs);
+    /* Enable USB early so the host sees the device during NVS restore */
+    rc = usb_enable(NULL);
+    if (rc != 0) {
+        LOG_ERR("usb_enable failed: %d", rc);
+        return 0;
+    }
+
+    /* --- LittleFS init & log restore --- */
+    rc = fs_mount(&lfs_mnt);
+    if (rc == 0) {
+        lfs_ready = true;
+        LOG_INF("LittleFS mounted at %s", LFS_MOUNT_POINT);
+
+        /* Restore saved log entries */
+        struct fs_file_t f;
+        fs_file_t_init(&f);
+        rc = fs_open(&f, LOG_FILE_PATH, FS_O_READ);
         if (rc == 0) {
-            nvs_ready = true;
-            LOG_INF("NVS: %u sectors of %u bytes",
-                    nvs.sector_count, nvs.sector_size);
-
-            /* Restore saved log entries */
-            struct log_meta meta;
-            if (nvs_read(&nvs, NVS_META_ID, &meta, sizeof(meta))
-                == sizeof(meta)
-                && meta.count <= RAM_LOG_CAPACITY
-                && meta.head  <  RAM_LOG_CAPACITY) {
-                uint32_t restored = 0;
-                for (uint32_t i = 0; i < meta.count; i++) {
-                    uint32_t idx = (meta.head + RAM_LOG_CAPACITY
-                                    - meta.count + i) % RAM_LOG_CAPACITY;
-                    if (nvs_read(&nvs, NVS_ENTRY_BASE + idx,
-                                 &ram_log[idx],
-                                 sizeof(struct ram_log_entry))
-                        == sizeof(struct ram_log_entry)) {
-                        restored++;
-                    }
-                }
-                ram_log_head  = meta.head;
-                ram_log_count = restored;
-                LOG_INF("Restored %u log entries from flash", restored);
+            struct log_header hdr;
+            ssize_t bytes = fs_read(&f, &hdr, sizeof(hdr));
+            if (bytes == sizeof(hdr)
+                && hdr.count <= RAM_LOG_CAPACITY
+                && hdr.head  <  RAM_LOG_CAPACITY) {
+                bytes = fs_read(&f, ram_log,
+                                RAM_LOG_CAPACITY * sizeof(struct ram_log_entry));
+                ram_log_head  = hdr.head;
+                ram_log_count = hdr.count;
+                LOG_INF("Restored %u log entries from flash", hdr.count);
             } else {
                 LOG_INF("No saved log data – starting fresh");
             }
+            fs_close(&f);
         } else {
-            LOG_ERR("NVS mount failed: %d", rc);
+            LOG_INF("No log file yet – starting fresh");
         }
     } else {
-        LOG_ERR("NVS flash device not ready");
+        LOG_ERR("LittleFS mount failed: %d", rc);
     }
 
     rc = mount_fs();
     if (rc == 0) {
         ensure_index_html();
         unmount_fs();
-    }
-
-    rc = usb_enable(NULL);
-    if (rc != 0) {
-        LOG_ERR("usb_enable failed: %d", rc);
-        return 0;
     }
 
     LOG_INF("Temp logger ready. Open USB drive and index.htm");
