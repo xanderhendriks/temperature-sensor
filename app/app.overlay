@@ -1,0 +1,46 @@
+/ {
+    ramdisk0 {
+        compatible = "zephyr,ram-disk";
+        disk-name = "RAM";
+        sector-size = <512>;
+        sector-count = <64>;
+    };
+};
+
+/* Add a nodelabel so we can reference the HTS221 in C */
+&i2c2 {
+    hts221: hts221@5f {
+        compatible = "st,hts221";
+        reg = <0x5f>;
+    };
+};
+
+/* SHT31 on Arduino D14/D15 (PB9/PB8) = i2c1 */
+&i2c1 {
+    sht31: sht3xd@44 {
+        compatible = "sensirion,sht3xd";
+        reg = <0x44>;
+    };
+};
+
+&zephyr_udc0 {
+    cdc_acm_uart0 {
+        compatible = "zephyr,cdc-acm-uart";
+    };
+};
+
+/* Carve LittleFS partition from external Quad-SPI flash (MX25R6435F, 8 MB) */
+&mx25r6435f {
+    partitions {
+        /delete-node/ partition@000;
+
+        store_partition: partition@0 {
+            label = "store";
+            reg = <0x0 0x7C0000>;   /* 7936 KB */
+        };
+        lfs_partition: partition@7C0000 {
+            label = "lfs_storage";
+            reg = <0x7C0000 0x40000>; /* 256 KB for LittleFS */
+        };
+    };
+};
