@@ -1,6 +1,6 @@
 // https://containers.dev/implementors/json_reference/
 {
-    "name": "STM32 Sample Application",
+    "name": "STM32 Temperature Sensor",
     "build": {
         "dockerfile": "${localWorkspaceFolder}/Dockerfile"
     },
@@ -10,8 +10,8 @@
         "XDG_RUNTIME_DIR": "/tmp",
         "PATH": "${localEnv:PATH}:/home/user/.local/share/stm32cube/bundles/cmake/4.0.1+st.3/bin"
     },
-    "workspaceMount": "source=${localWorkspaceFolder}/..,target=/workspace,type=bind,consistency=cached",
-    "workspaceFolder": "/workspace/temperature-sensor",
+    "workspaceMount": "source=${localWorkspaceFolder}/../,target=/workspace,type=bind,consistency=cached",
+    "workspaceFolder": "/workspace",
     "containerUser": "user",
     "mounts": [
         // Display
@@ -64,5 +64,5 @@
             ]
         }
     },
-    "postCreateCommand": "printf '%s\n' 'cd /workspace/stm32' >> ~/.bashrc"
+    "postCreateCommand": "printf '%s\n' 'cd /workspace/temperature-sensor' >> ~/.bashrc"
 }

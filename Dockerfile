@@ -22,7 +22,7 @@ RUN <<EOF
     update-locale LANG=en_US.UTF-8
 EOF
 
-ENV ZEPHYR_SDK_VERSION=0.16.5
+ENV ZEPHYR_SDK_VERSION=0.17.4
 ENV ZEPHYR_SDK_INSTALL_DIR=/opt/zephyr-sdk-${ZEPHYR_SDK_VERSION}
 ENV ZEPHYR_TOOLCHAIN_VARIANT=zephyr
 ARG ZEPHYR_SDK_URL
@@ -40,6 +40,7 @@ EOF
 
 RUN <<EOF
     pip3 install --break-system-packages \
+        jsonschema \
         pyelftools \
         west
 EOF
