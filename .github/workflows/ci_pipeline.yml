@@ -80,7 +80,7 @@ jobs:
             -v "$GITHUB_WORKSPACE:/workspace" \
             -w /workspace \
             zephyr-build:latest \
-            "west build -b b_l4s5i_iot01a app -p"
+            "west build -b b_l4s5i_iot01a app/app -p"
 
       - name: Upload firmware artifacts
         uses: actions/upload-artifact@v4
