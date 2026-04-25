@@ -1,0 +1,121 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
+      - master
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: app
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: app
+          load: true
+          tags: zephyr-build:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: West init
+        run: |
+          docker run --rm --user root \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            zephyr-build:latest \
+            "west init -l app"
+
+      - name: Cache west modules
+        id: west-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            zephyr
+            modules
+            bootloader
+            tools
+          key: west-${{ hashFiles('app/west.yml') }}
+
+      - name: West update
+        if: steps.west-cache.outputs.cache-hit != 'true'
+        run: |
+          docker run --rm --user root \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            zephyr-build:latest \
+            "west update --fetch-opt=--depth=1"
+
+      - name: West patch apply
+        run: |
+          docker run --rm --user root \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            zephyr-build:latest \
+            "west patch apply"
+
+      - name: Build firmware
+        run: |
+          docker run --rm --user root \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            zephyr-build:latest \
+            "west build -b b_l4s5i_iot01a app -p"
+
+      - name: Upload firmware artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ github.sha }}
+          path: |
+            build/zephyr/zephyr.bin
+            build/zephyr/zephyr.hex
+            build/zephyr/zephyr.elf
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download firmware artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: firmware-${{ github.sha }}
+          path: firmware
+
+      - name: Rename firmware files
+        run: |
+          TAG="${{ github.ref_name }}"
+          mv firmware/zephyr.bin "firmware/zephyr-b_l4s5i_iot01a-${TAG}.bin"
+          mv firmware/zephyr.hex "firmware/zephyr-b_l4s5i_iot01a-${TAG}.hex"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            firmware/zephyr-b_l4s5i_iot01a-*.bin
+            firmware/zephyr-b_l4s5i_iot01a-*.hex
