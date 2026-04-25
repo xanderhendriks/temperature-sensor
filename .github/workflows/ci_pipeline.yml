@@ -64,7 +64,7 @@ jobs:
             -v "$GITHUB_WORKSPACE:/workspace" \
             -w /workspace \
             zephyr-build:latest \
-            "west update --fetch-opt=--depth=1"
+            "west update --fetch-opt=--depth=5"
 
       - name: West patch apply
         run: |
