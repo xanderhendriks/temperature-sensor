@@ -3,7 +3,7 @@
         compatible = "zephyr,ram-disk";
         disk-name = "RAM";
         sector-size = <512>;
-        sector-count = <64>;
+        sector-count = <128>;   /* FatFs R0.16 requires >= 128 sectors to format */
     };
 };
 

@@ -84,7 +84,7 @@ temperature-sensor/
 4. **Build and flash**
    ```bash
    west build -b b_l4s5i_iot01a app
-   west flash
+   west flash --runner openocd
    ```
 
    Use the USB-OTG port (not the ST-LINK port) for the composite USB device.

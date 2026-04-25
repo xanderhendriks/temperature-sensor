@@ -6,7 +6,8 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/storage/disk_access.h>
-#include <zephyr/usb/usb_device.h>
+#include <zephyr/usb/usbd.h>
+#include <zephyr/usb/class/usbd_msc.h>
 #include <zephyr/drivers/rtc.h>
 #include <zephyr/drivers/sensor.h>
 #include <zephyr/fs/littlefs.h>
@@ -15,6 +16,17 @@
 #include <time.h>
 
 LOG_MODULE_REGISTER(temp_logger, LOG_LEVEL_INF);
+
+/* USB Device Stack (next) definitions */
+USBD_DEVICE_DEFINE(app_usbd,
+		   DEVICE_DT_GET(DT_NODELABEL(zephyr_udc0)),
+		   0x2FE3, 0x0001);
+USBD_DESC_LANG_DEFINE(app_lang);
+USBD_DESC_MANUFACTURER_DEFINE(app_mfr, "Zephyr");
+USBD_DESC_PRODUCT_DEFINE(app_product, "TempLogger");
+USBD_DESC_CONFIG_DEFINE(app_fs_cfg_desc, "FS Configuration");
+USBD_CONFIGURATION_DEFINE(app_fs_config, 0, 250, &app_fs_cfg_desc);
+USBD_DEFINE_MSC_LUN(ram, "RAM", "Zephyr", "RAMDisk", "0.00");
 
 #define DISK_NAME "RAM"
 #define MOUNT_POINT "/RAM:"
@@ -25,7 +37,7 @@ LOG_MODULE_REGISTER(temp_logger, LOG_LEVEL_INF);
 #define USB_RX_BUF_SIZE 256
 #define USB_TX_BUF_SIZE 512
 
-#if IS_ENABLED(CONFIG_USB_CDC_ACM)
+#if IS_ENABLED(CONFIG_USBD_CDC_ACM_CLASS)
 static const struct device *cdc_dev;
 #endif
 static const struct device *rtc_dev;
@@ -345,7 +357,7 @@ static const char index_html[] =
 
 static void cdc_write(const char *data, size_t len)
 {
-#if !IS_ENABLED(CONFIG_USB_CDC_ACM)
+#if !IS_ENABLED(CONFIG_USBD_CDC_ACM_CLASS)
     ARG_UNUSED(data);
     ARG_UNUSED(len);
     return;
@@ -611,7 +623,7 @@ static void handle_command(const char *cmd)
     }
 }
 
-#if IS_ENABLED(CONFIG_USB_CDC_ACM)
+#if IS_ENABLED(CONFIG_USBD_CDC_ACM_CLASS)
 static void usb_thread(void)
 {
     char rx_buf[USB_RX_BUF_SIZE];
@@ -619,6 +631,13 @@ static void usb_thread(void)
 
     /* Give USB enumeration time to complete */
     k_msleep(2000);
+
+    /* The USBD CDC ACM driver requires uart_irq_rx_enable() to queue the
+     * initial USB bulk-OUT transfer.  Without it the RX ring buffer is
+     * never populated and uart_poll_in() always returns -1, so the device
+     * never receives any commands from the host.
+     */
+    uart_irq_rx_enable(cdc_dev);
 
     LOG_INF("CDC ACM thread started");
 
@@ -658,7 +677,60 @@ static void logger_thread(void)
     }
 }
 
-#if IS_ENABLED(CONFIG_USB_CDC_ACM)
+static int usb_init(void)
+{
+    int ret;
+
+    ret = usbd_add_descriptor(&app_usbd, &app_lang);
+    if (ret) {
+        LOG_ERR("Failed to add language descriptor: %d", ret);
+        return ret;
+    }
+
+    ret = usbd_add_descriptor(&app_usbd, &app_mfr);
+    if (ret) {
+        LOG_ERR("Failed to add manufacturer descriptor: %d", ret);
+        return ret;
+    }
+
+    ret = usbd_add_descriptor(&app_usbd, &app_product);
+    if (ret) {
+        LOG_ERR("Failed to add product descriptor: %d", ret);
+        return ret;
+    }
+
+    ret = usbd_add_configuration(&app_usbd, USBD_SPEED_FS, &app_fs_config);
+    if (ret) {
+        LOG_ERR("Failed to add FS configuration: %d", ret);
+        return ret;
+    }
+
+    ret = usbd_register_all_classes(&app_usbd, USBD_SPEED_FS, 1, NULL);
+    if (ret) {
+        LOG_ERR("Failed to register USB classes: %d", ret);
+        return ret;
+    }
+
+    /* Set IAD code triple so Windows enumerates composite CDC+MSC correctly */
+    usbd_device_set_code_triple(&app_usbd, USBD_SPEED_FS,
+                                USB_BCC_MISCELLANEOUS, 0x02, 0x01);
+
+    ret = usbd_init(&app_usbd);
+    if (ret) {
+        LOG_ERR("Failed to initialize USB device: %d", ret);
+        return ret;
+    }
+
+    ret = usbd_enable(&app_usbd);
+    if (ret) {
+        LOG_ERR("Failed to enable USB device: %d", ret);
+        return ret;
+    }
+
+    return 0;
+}
+
+#if IS_ENABLED(CONFIG_USBD_CDC_ACM_CLASS)
 K_THREAD_DEFINE(usb_tid, 2048, usb_thread, NULL, NULL, NULL, 5, 0, 0);
 #endif
 K_THREAD_DEFINE(log_tid, 2048, logger_thread, NULL, NULL, NULL, 5, 0, 0);
@@ -667,7 +739,7 @@ int main(void)
 {
     int rc;
 
-#if IS_ENABLED(CONFIG_USB_CDC_ACM)
+#if IS_ENABLED(CONFIG_USBD_CDC_ACM_CLASS)
     cdc_dev = DEVICE_DT_GET_ONE(zephyr_cdc_acm_uart);
     if (!device_is_ready(cdc_dev)) {
         LOG_ERR("CDC ACM device not ready");
@@ -697,13 +769,6 @@ int main(void)
     } else {
         LOG_WRN("SHT31 not available");
         sht31_dev = NULL;
-    }
-
-    /* Enable USB early so the host sees the device during NVS restore */
-    rc = usb_enable(NULL);
-    if (rc != 0) {
-        LOG_ERR("usb_enable failed: %d", rc);
-        return 0;
     }
 
     /* --- LittleFS init & log restore --- */
@@ -738,10 +803,20 @@ int main(void)
         LOG_ERR("LittleFS mount failed: %d", rc);
     }
 
+    /* Format the FAT RAM disk and write index.htm BEFORE enabling USB.
+     * Windows reads sector 0 immediately after enumeration; if the disk
+     * is still all-zeros at that point it marks the volume as inaccessible.
+     */
     rc = mount_fs();
     if (rc == 0) {
         ensure_index_html();
         unmount_fs();
+    }
+
+    rc = usb_init();
+    if (rc != 0) {
+        LOG_ERR("usb_init failed: %d", rc);
+        return 0;
     }
 
     LOG_INF("Temp logger ready. Open USB drive and index.htm");
